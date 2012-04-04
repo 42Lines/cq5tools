@@ -76,6 +76,14 @@ Setting up anything more than one or two users for an instance is time consuming
     Adding group w/workflow-editors to user jbonham
     Adding group a/administrators to user jbonham
 
-Note that the simple format in the script allows users to be a part of
+Note that the simple format in the script:
+
+    my @gData = (
+        # Last, First, Username, Installations, Admin?, Password
+        'Page,Jimmy,jpage,FOO,N,QW0yPG4I','Plant,Robert,rplant,BAR,N,DmYwzi',
+        'Bonham,John,jbonham,FOOBAR,Y,GQfy88uA'
+        );
+
+allows users to be a part of
 more than one installation.  For example, John Bonham has the field
 `FOOBAR` which will include him when `--installation` is `FOO` or `BAR`.
