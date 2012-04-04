@@ -5,10 +5,10 @@ instances on many machines.
 
 ## Scripts
 
-* change-cq5-passwords - change the admin password in the five (CQ5.4) or
+* `change-cq5-passwords` - change the admin password in the five (CQ5.4) or
 the two (CQ5.5) places one needs to change it for it to be changed everywhere
-* cq5-replication - display replication agent logs, test replication agent configuration, and create new replication agents all from the command line
-* cq5-users - create an initial set of users
+* `cq5-replication` - display replication agent logs, test replication agent configuration, and create new replication agents all from the command line
+* `cq5-users` - create an initial set of users
 
 ## change-cq5-passwords
 
@@ -78,4 +78,4 @@ Setting up anything more than one or two users for an instance is time consuming
 
 Note that the simple format in the script allows users to be a part of
 more than one installation.  For example, John Bonham has the field
-`FOOBAR` which will include him when `--installation` is FOO or BAR.
+`FOOBAR` which will include him when `--installation` is `FOO` or `BAR`.
