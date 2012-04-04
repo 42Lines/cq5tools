@@ -1,0 +1,130 @@
+#!/usr/bin/perl -w
+
+# Copyright 2011-2012, 42 Lines, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+use strict;
+use Getopt::Long;
+use LWP;
+use HTTP::Request::Common;
+
+my $gCommand="";
+my $gHost="localhost";
+my $gPort="4502";
+my $gPassword;
+my $gInstallation;
+my $gDebug=0;
+my $gTrace=0;
+my $gUA = LWP::UserAgent->new;
+$gUA->agent("cq5-users");
+my @gData = (
+    # Last, First, Username, Installations, Admin?, Password
+    'Page,Jimmy,jpage,FOO,N,QW0yPG4I','Plant,Robert,rplant,BAR,N,DmYwzi',
+    'Bonham,John,jbonham,FOOBAR,Y,GQfy88uA'
+    );
+my %gUsers;
+foreach (@gData) {
+    my @row = split(/,/, $_);
+    $gUsers{$row[2]}{'last'} = $row[0];
+    $gUsers{$row[2]}{'first'} = $row[1];
+    $gUsers{$row[2]}{'installations'} = $row[3];
+    $gUsers{$row[2]}{'admin_p'} = $row[4];
+    $gUsers{$row[2]}{'password'} = $row[5];
+}
+
+sub usage(;$) {
+    my $message = shift;
+    print "ERROR: $message \n\n" if (defined $message);
+
+    print <<EOF
+Create or report on CQ5 users
+    usage: $0 --command=COMMAND --pw PASSWORD [options]
+
+Commands:
+    report: report on existing users and their groups
+    create: create default set of users
+
+Options:
+    --host          hostname for URLs (default: $gHost)
+    --port          port for URLs (default: $gPort)
+    --pw            Password for admin account
+    --installation  Set of users to use (FOO or BAR)
+    --trace         print extra information (default: false)
+    --debug         print debugging information (default: false)
+EOF
+;
+    exit(1);
+}
+
+GetOptions(
+    "command=s" => \$gCommand,
+    "host=s" => \$gHost,
+    "port=s" => \$gPort,
+    "pw=s" => \$gPassword,
+    "installation=s" => \$gInstallation,
+    "trace!" => \$gTrace,
+    "debug!" => \$gDebug,
+    ) || die usage();
+
+usage("Must specify a command with --command") if ($gCommand !~ 'report|create');
+usage("Must specify a password with --pw") unless (defined $gPassword);
+usage("Must specify an installation with --installation") unless (defined $gInstallation);
+
+$gTrace = 1 if ($gDebug);
+
+if ($gCommand =~ 'report') {
+    die ("Not implemented yet.  Sorry.\n");
+}
+
+if ($gCommand =~ 'create') {
+    foreach my $user (keys %gUsers) {
+	next unless ($gUsers{$user}{'installations'} =~ m/$gInstallation/);
+	print "Creating user $user\n" if ($gTrace);
+
+	# This would be better using LWP, but it requires a multi-part
+	# form with basic auth and I didn't spend the time figuring
+	# out how to use the authorization_basic convenience function
+	# with HTTP::Request::Common
+
+	my $cmd = "curl -s -u admin:$gPassword" . 
+	    ' -F :status="browser" -F _charset_="utf-8" ' .
+	    ' -F rep:password="' . $gUsers{$user}{'password'} . '"' .
+	    ' -F rep:userId="' . $user . '"' .
+	    ' -F givenName="' . $gUsers{$user}{'first'} . '"' .
+	    ' -F familyName="' . $gUsers{$user}{'last'} . '"' .
+	    " http://$gHost:$gPort/libs/cq/security/authorizables/POST";
+	my $output = `$cmd`;
+
+	if ($output =~ m#<div id="Status">201</div>#) {
+	     print "OK: " . $output if ($gDebug);
+	     print "Created user $user\n" if ($gTrace);
+	} elsif ($output =~ m#<div id="Status">400</div>#) {
+	    print "EXISTS: " .  $output if ($gDebug);
+	    print "User $user already exists\n" if ($gTrace);
+	} else {
+	    print "Failed: " . $output if ($gDebug);
+	    print "Failed to create user $user\n";
+	}
+
+	foreach my $group (qw(c/contributor c/content-authors w/workflow-users w/workflow-editors)) {
+	    print "Adding group $group to user $user\n" if ($gTrace);
+	    `curl -s --data addMembers=$user --user admin:$gPassword http://$gHost:$gPort/home/groups/$group.rw.html`;
+	}
+
+	if ($gUsers{$user}{'admin_p'} =~ m/Y/i) {
+	    print "Adding group a/administrators to user $user\n" if ($gTrace);
+	    `curl -s --data addMembers=$user --user admin:$gPassword http://$gHost:$gPort/home/groups/a/administrators.rw.html`;
+	}
+    }
+}

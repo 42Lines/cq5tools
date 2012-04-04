@@ -1,0 +1,240 @@
+#!/usr/bin/perl -w
+
+# Copyright 2012, 42 Lines, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+use strict;
+use Getopt::Long;
+use LWP;
+use JSON;
+
+my $gCommand="";
+my $gHost="localhost";
+my $gPort="4502";
+my $gPassword;
+my @gAgents;
+my $gFQDN;
+my $gDebug=0;
+my $gTrace=0;
+my $gUA = LWP::UserAgent->new;
+$gUA->agent("cq5-replication");
+
+sub usage(;$) {
+    my $message = shift;
+    print "ERROR: $message \n\n" if (defined $message);
+
+    print <<EOF
+Create, configure, and monitor CQ5 replication agents
+    usage: $0 --command=COMMAND --pw PASSWORD [options]
+
+Commands:
+    report: report on existing replication agents
+    create: create replication agents named by
+       --agents with FQDN --fqdn
+    pubfix: set the transportUri for agent "publis"
+       log: print the log for --agents
+      test: initiate replication test for --agents
+
+Options:
+    --host      hostname for URLs (default: $gHost)
+    --port      port for URLs (default: $gPort)
+    --pw        Password for admin account
+    --agents    Specify replication agents
+    --fqdn      FQDN to append to target names in the transportURI
+    --trace     print extra information (default: false)
+    --debug     print debugging information (default: false)
+EOF
+;
+    exit(1);
+}
+
+GetOptions(
+    "command=s" => \$gCommand,
+    "host=s" => \$gHost,
+    "port=s" => \$gPort,
+    "pw=s" => \$gPassword,
+    "agents=s" => \@gAgents,
+    "fqdn=s" => \$gFQDN,
+    "trace!" => \$gTrace,
+    "debug!" => \$gDebug,
+    ) || die usage();
+
+usage("Must specify a command with --command") if ($gCommand !~ 'report|create|pubfix|log|test');
+usage("Must specify a password with --pw") unless (defined $gPassword);
+
+# Enables:
+# --agents=foo,bar
+# --agents=foo --agents=bar
+@gAgents = split(/,/,join(',',@gAgents));
+
+$gTrace = 1 if ($gDebug);
+
+if ($gCommand =~ 'report') {
+    my $repbase = "http://$gHost:$gPort/crx/server/crx.default/jcr:root/etc/replication/";
+    my $req = HTTP::Request->new('GET' => $repbase . "agents.author/.json");
+    $req->authorization_basic('admin', $gPassword); 
+    my $res = $gUA->request($req);
+
+    unless ($res->is_success()) {
+	print "Failed: ", $res->as_string if ($gDebug);
+	print "Failed to grab list of replication agents on author\n" if ($gTrace);
+	exit(1);
+    }
+
+    my $decoded = decode_json $res->content;
+    my $fmt = "%-20s %-7s %-6s %-7s %-20s %-40s %-20s\n";
+    printf($fmt, 'Name','Blocked','Paused','Enabled','Title','transportUri','Description');
+
+    foreach my $candidate (sort keys %{$decoded}) {
+	next if ($candidate =~ m/^[:]?jcr/);
+	print "candidate agent $candidate\n" if ($gDebug);
+	
+	my $creq = HTTP::Request->new('GET' => "http://$gHost:$gPort/etc/replication/agents.author/$candidate/jcr:content.queue.json");
+	$creq->authorization_basic('admin', $gPassword); 
+	my $cres = $gUA->request($creq);
+
+	unless ($cres->is_success()) {
+	    print "Failed: ", $cres->as_string if ($gDebug);
+	    print "Failed to grab queue information for replication agent $candidate\n" if ($gTrace);
+	    exit(1);
+	}
+
+	my $cdecoded = JSON->new->decode($cres->content);
+	my $qcontent = $cdecoded->{'metaData'}{'queueStatus'};
+	my @vals = map(defined($qcontent->{$_}) ? $qcontent->{$_} : "", qw(isBlocked isPaused));
+
+	$creq = HTTP::Request->new('GET' => $repbase . "agents.author/$candidate/.json");
+	$creq->authorization_basic('admin', $gPassword); 
+	$cres = $gUA->request($creq);
+
+	unless ($cres->is_success()) {
+	    print "Failed: ", $cres->as_string if ($gDebug);
+	    print "Failed to grab information about replication agent $candidate\n" if ($gTrace);
+	    exit(1);
+	}
+
+	$cdecoded = JSON->new->decode($cres->content);
+	my $content = $cdecoded->{'jcr:content'};
+	push(@vals, map(defined($content->{$_}) ? $content->{$_} : "", qw(enabled jcr:title transportUri description)));
+	printf($fmt, $candidate, @vals);
+    }
+}
+
+if ($gCommand =~ 'create') {
+    my $repbase = "http://$gHost:$gPort/crx/server/crx.default/jcr:root/etc/replication/";
+
+    usage("Must specify agents with --agents") unless (scalar(@gAgents));
+    usage("Must specify a FQDN with --fqdn") unless (defined $gFQDN);
+
+    foreach my $agent (@gAgents) {
+	print "Copying publish author agent to $agent\n";
+	
+	my $req = HTTP::Request->new('COPY' => $repbase . "agents.author/publish");
+	$req->authorization_basic('admin', $gPassword); 
+	$req->header('Overwrite' => 'T',
+		     'Destination' => "/crx/server/crx.default/jcr%3Aroot/etc/replication/agents.author/$agent");
+	
+	my $res = $gUA->request($req);
+	
+	if ($res->is_success()) {
+	    print "OK: ", $res->content if ($gDebug);
+	    print "$agent created\n" if ($gTrace);
+	} else {
+	    print "Failed: ", $res->as_string if ($gDebug);
+	    print "failed to create $agent\n" if ($gTrace);
+	}
+
+	$req = HTTP::Request->new('POST' => $repbase . "agents.author/$agent/jcr:content");
+	$req->authorization_basic('admin', $gPassword); 
+	$req->content_type('application/x-www-form-urlencoded');
+	my $data = 'description=Replication agent for ' . $agent . 
+	    '&jcr:title=' . $agent .
+	    '&transportUri=http://' . $agent . '.' . $gFQDN . ':' . ($gPort+1) . '/bin/receive?sling:authRequestLogin=1';
+	$req->content($data);
+	$res = $gUA->request($req);
+	
+	if ($res->is_success()) {
+	    print "OK: ", $res->content if ($gDebug);
+	    print "$agent attributes modified\n" if ($gTrace);
+	} else {
+	    print "Failed: ", $res->as_string if ($gDebug);
+	    print "failed to modify attributes for $agent\n" if ($gTrace);
+	}
+
+    }
+}
+
+if ($gCommand =~ 'pubfix') {
+    my $repbase = "http://$gHost:$gPort/crx/server/crx.default/jcr:root/etc/replication/";
+    my $agent = 'publish';
+
+    my $req = HTTP::Request->new('POST' => $repbase . "agents.author/$agent/jcr:content");
+    $req->authorization_basic('admin', $gPassword); 
+    $req->content_type('application/x-www-form-urlencoded');
+    my $data = 'transportUri=http://localhost:' . ($gPort+1) . '/bin/receive?sling:authRequestLogin=1';
+    $req->content($data);
+    my $res = $gUA->request($req);
+    
+    if ($res->is_success()) {
+	print "OK: ", $res->content if ($gDebug);
+	print "$agent attributes modified\n" if ($gTrace);
+    } else {
+	print "Failed: ", $res->as_string if ($gDebug);
+	print "failed to modify attributes for $agent\n" if ($gTrace);
+    }    
+}
+
+if ($gCommand =~ 'test') {
+    my $base = "http://$gHost:$gPort/etc/replication/";
+
+    usage("Must specify agents with --agents") unless (scalar(@gAgents));
+
+    foreach my $agent (@gAgents) {
+	my $req = HTTP::Request->new('GET' => $base . "agents.author/$agent.test.html");
+	$req->authorization_basic('admin', $gPassword); 
+	
+	my $res = $gUA->request($req);
+	
+	if ($res->is_success()) {
+	    my $content = $res->content;
+	    $content =~ s/<br>/\n/g;
+	    $content =~ s/&lt;/</g;
+	    $content =~ s/&gt;/>/g;
+	    print $content;
+	} else {
+	    print "$agent failed to run the replication test\n";
+	    print $res->as_string if ($gDebug);
+	}
+    }
+}
+
+if ($gCommand =~ 'log') {
+    my $base = "http://$gHost:$gPort/etc/replication/";
+
+    usage("Must specify agents with --agents") unless (scalar(@gAgents));
+
+    foreach my $agent (@gAgents) {
+	my $req = HTTP::Request->new('GET' => $base . "agents.author/$agent.log.html");
+	$req->authorization_basic('admin', $gPassword); 
+	
+	my $res = $gUA->request($req);
+	
+	if ($res->is_success()) {
+	    print $res->content;
+	} else {
+	    print "$agent failed to retrieve the agent log\n";
+	    print $res->as_string if ($gDebug);
+	}
+    }
+}
